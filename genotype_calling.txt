@@ -1,0 +1,46 @@
+# Genotype likelihoods
+#
+angsd -GL 2 -doGlf 2 -doMajorMinor 1 -doMaf 2 -minMaf 0.05 -SNP_pval 1e-6 -uniqueOnly 1 -minMapQ 30 -minQ 20 -skipTriallelic 1 -nThreads 5 -minInd 20 -doDepth 1 -doCounts 1 -bam bams.txt -out angsd_gl
+
+pcangsd -beagle all_gl.beagle.gz -out all_pca_e4 -sites_save -post_save -threads 20 -inbreedSamples -e 4
+
+# Conversion to vcf
+#
+cat > convert.py << EOF
+import sys
+import numpy as np
+data=np.load(sys.argv[1])
+np.savetxt(sys.argv[2],data, delimiter='\t')
+EOF
+
+python convert.py all_pca_e4.post.beagle.npy all_pca_e4.post.beagle
+
+zcat all_gl.beagle.gz | cut -f-3 | awk 'BEGIN{nuc[0]="A";nuc[1]="C";nuc[2]="G";nuc[3]="T";OFS="\t"}{if(NR>1){$2=nuc[$2];$3=nuc[$3]} print $0}' > snps.txt
+
+paste <(awk '(NR>1)' snps.txt) all_pca_e4.sites | awk '($4==1)' | cut -f 1-3 > snps_selected.txt
+
+(echo -ne "marker\tallele1\tallele2";cat names.txt | while read n; do echo -en "\t$n\t$n\t$n"; done; echo) > header.txt
+
+(cat header.txt; paste snps_selected.txt all_pca_e4.post.beagle) | awk -f beagle2vcf.awk | bgzip > all_pca_e4.vcf.gz
+
+cat > vcf_header.txt << EOF
+##fileformat=VCFv4.2
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=PL,Number=G,Type=Integer,Description="Normalized, Phred-scaled likelihoods for genotypes as defined in the VCF specification">
+EOF
+
+(cat vcf_header.txt && zcat all_pca_e4.vcf.gz ) | bgzip > all_pca_e4_fix.vcf.gz &
+
+tabix all_pca_e4_fix.vcf.gz
+
+# Imputation and phasing per population
+#
+bcftools view -S arctic.txt -Oz -o arctic_pca_e4.vcf.gz all_pca_e4_fix.vcf.gz
+bcftools view -S baltic.txt -Oz -o baltic_pca_e4.vcf.gz all_pca_e4_fix.vcf.gz
+bcftools view -S ladoga.txt -Oz -o ladoga_pca_e4.vcf.gz all_pca_e4_fix.vcf.gz
+bcftools view -S saimaa.txt -Oz -o saimaa_pca_e4.vcf.gz all_pca_e4_fix.vcf.gz
+
+
+java -jar beagle.08Jun17.d8b.jar gl=$pop'_pca_e4.vcf.gz' out=$pop'_pca_e4_imp'
+
+java -jar beagle.08Jun17.d8b.jar gt=$pop'_pca_e4_imp.vcf.gz' out=$pop'_pca_e4_phased'
